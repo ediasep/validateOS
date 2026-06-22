@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../providers/chat_provider.dart';
-import '../../services/gemini_service.dart';
+import '../../providers/user_settings_provider.dart';
 import '../../theme.dart';
 import '../../widgets/chat_bubble.dart';
 import '../../widgets/chat_confirmation_card.dart';
@@ -17,19 +18,14 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _textController = TextEditingController();
   final _scrollController = ScrollController();
-  bool _hasApiKey = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _checkApiKey();
-  }
-
-  Future<void> _checkApiKey() async {
-    final gemini = GeminiService();
-    final key = await gemini.getApiKey();
-    setState(() => _hasApiKey = key != null && key.isNotEmpty);
-  }
+  static const _modelOptions = [
+    'gemini-3.5-flash',
+    'gemini-3.1-pro',
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+  ];
 
   void _sendMessage() {
     final text = _textController.text.trim();
@@ -61,10 +57,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatProvider);
+    final settingsAsync = ref.watch(userSettingsProvider);
+    final settings = settingsAsync.valueOrNull;
+    final hasApiKey = settings?.geminiApiKey != null && settings!.geminiApiKey!.isNotEmpty;
 
-    if (!_hasApiKey) {
+    if (!hasApiKey) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Chat')),
+        appBar: AppBar(
+          title: const Text('Chat'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.settings_outlined, size: 20),
+              onPressed: () => context.push('/settings'),
+            ),
+          ],
+        ),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(32),
@@ -84,12 +91,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Add your Google Gemini API key in Settings to enable the AI assistant.',
+                  'Add your Google Gemini API key to enable the AI assistant.',
                   style: GoogleFonts.inter(
                     fontSize: 14,
                     color: AppColors.textSecondary,
                   ),
                   textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton.icon(
+                  onPressed: () => context.push('/settings'),
+                  icon: const Icon(Icons.key),
+                  label: const Text('Add API Key'),
                 ),
               ],
             ),
@@ -102,6 +115,42 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       appBar: AppBar(
         title: const Text('Chat'),
         actions: [
+          // Model selector
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Center(
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: settings.preferredModel,
+                  icon: const Icon(Icons.arrow_drop_down, size: 18),
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    color: AppColors.textPrimary,
+                  ),
+                  dropdownColor: AppColors.surfaceHigh,
+                  items: _modelOptions.map((model) {
+                    return DropdownMenuItem(
+                      value: model,
+                      child: Text(
+                        model.replaceAll('gemini-', '').replaceAll('-', ' '),
+                        style: GoogleFonts.inter(fontSize: 12),
+                      ),
+                    );
+                  }).toList(),
+                  onChanged: (value) {
+                    if (value != null) {
+                      ref.read(userSettingsProvider.notifier)
+                          .saveSettings(preferredModel: value);
+                    }
+                  },
+                ),
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings_outlined, size: 20),
+            onPressed: () => context.push('/settings'),
+          ),
           IconButton(
             icon: const Icon(Icons.delete_outline, size: 20),
             onPressed: () => ref.read(chatProvider.notifier).clearChat(),
@@ -136,8 +185,43 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 : ListView.builder(
                     controller: _scrollController,
                     padding: const EdgeInsets.symmetric(vertical: 8),
-                    itemCount: chatState.messages.length,
+                    itemCount: chatState.messages.length + (chatState.isLoading ? 1 : 0),
                     itemBuilder: (context, index) {
+                      if (chatState.isLoading && index == chatState.messages.length) {
+                        return Align(
+                          alignment: Alignment.centerLeft,
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: AppColors.surfaceHigh,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: AppColors.accent,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Thinking...',
+                                  style: GoogleFonts.inter(
+                                    fontSize: 13,
+                                    color: AppColors.textSecondary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }
+
                       final msg = chatState.messages[index];
 
                       if (msg.toolConfirmation != null &&
@@ -193,9 +277,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
 
           if (chatState.isLoading)
-            const Padding(
-              padding: EdgeInsets.all(8),
-              child: LinearProgressIndicator(color: AppColors.accent),
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: LinearProgressIndicator(color: AppColors.accent),
+                  ),
+                  const SizedBox(width: 8),
+                  Chip(
+                    label: Text(
+                      settings.preferredModel,
+                      style: GoogleFonts.inter(fontSize: 10),
+                    ),
+                    padding: EdgeInsets.zero,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ],
+              ),
             ),
 
           // Input

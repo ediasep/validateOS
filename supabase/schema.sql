@@ -87,3 +87,20 @@ create policy "Users manage their own validations"
   on validations for all
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
+
+-- User Settings table
+CREATE TABLE IF NOT EXISTS user_settings (
+  id uuid primary key default uuid_generate_v4(),
+  user_id uuid references auth.users not null unique,
+  gemini_api_key text,
+  preferred_model text not null default 'gemini-3.5-flash',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table user_settings enable row level security;
+
+create policy "Users manage their own settings"
+  on user_settings for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);

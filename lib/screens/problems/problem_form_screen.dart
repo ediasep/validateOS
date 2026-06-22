@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/problem_provider.dart';
+import '../../providers/user_settings_provider.dart';
 import '../../services/gemini_service.dart';
 import '../../theme.dart';
 import '../../widgets/ai_review_card.dart';
@@ -55,11 +56,14 @@ class _ProblemFormScreenState extends ConsumerState<ProblemFormScreen> {
       _reviewResult = null;
     });
 
+    final settings = await ref.read(userSettingsProvider.future);
     final gemini = GeminiService();
     final result = await gemini.reviewProblem(
       statement: _statementController.text.trim(),
       targetAudience: _audienceController.text.trim(),
       source: _source,
+      apiKey: settings?.geminiApiKey ?? '',
+      preferredModel: settings?.preferredModel,
     );
 
     setState(() {

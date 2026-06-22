@@ -1,25 +1,27 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class GeminiService {
-  static const _baseUrl =
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
-  final FlutterSecureStorage _storage;
+  static const _apiBase =
+      'https://generativelanguage.googleapis.com/v1beta/models';
 
-  GeminiService({FlutterSecureStorage? storage})
-      : _storage = storage ?? const FlutterSecureStorage();
+  static final List<String> _modelCascade = [
+    'gemini-3.5-flash',
+    'gemini-3.1-pro',
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+  ];
 
-  Future<String?> getApiKey() async {
-    return _storage.read(key: 'gemini_api_key');
-  }
+  String _urlForModel(String model) =>
+      '$_apiBase/$model:generateContent';
 
-  Future<void> setApiKey(String key) async {
-    await _storage.write(key: 'gemini_api_key', value: key);
-  }
-
-  Future<void> removeApiKey() async {
-    await _storage.delete(key: 'gemini_api_key');
+  bool _isQuotaError(String message) {
+    final lower = message.toLowerCase();
+    return lower.contains('quota') ||
+        lower.contains('rate limit') ||
+        lower.contains('429') ||
+        lower.contains('resource exhausted');
   }
 
   static final List<Map<String, dynamic>> _functionDeclarations = [
@@ -180,121 +182,247 @@ class GeminiService {
         'required': ['solution_id', 'status']
       }
     },
+    {
+      'name': 'web_search',
+      'description':
+          'Search the web for real quotes, reviews, forum threads, or social media posts about a problem. Use this when the user asks you to find evidence.',
+      'parameters': {
+        'type': 'object',
+        'properties': {
+          'query': {
+            'type': 'string',
+            'description': 'A specific search query to find relevant evidence'
+          }
+        },
+        'required': ['query']
+      }
+    },
   ];
 
   static final List<Map<String, dynamic>> _tools = [
     {'functionDeclarations': _functionDeclarations},
-    {'googleSearch': {}},
   ];
 
-  static const _writeFunctionNames = {
+  static const _acceptedFunctionNames = {
     'create_problem',
     'create_solution',
     'create_validation',
     'create_problem_evidence',
     'update_problem_status',
     'update_solution_status',
+    'web_search',
   };
 
   Future<GeminiResponse> sendMessage({
     required String systemPrompt,
     required List<Map<String, dynamic>> contents,
+    required String apiKey,
+    String? preferredModel,
   }) async {
-    final apiKey = await getApiKey();
-    if (apiKey == null || apiKey.isEmpty) {
+    if (apiKey.isEmpty) {
       return GeminiResponse(
         text: 'No Gemini API key configured. Go to Settings to add one.',
         functionCall: null,
       );
     }
 
-    try {
-      final response = await http.post(
-        Uri.parse('$_baseUrl?key=$apiKey'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'system_instruction': {
-            'parts': [
-              {'text': systemPrompt}
-            ]
-          },
-          'contents': contents,
-          'tools': _tools,
-        }),
+    final modelsToTry = <String>[];
+    if (preferredModel != null && _modelCascade.contains(preferredModel)) {
+      modelsToTry.add(preferredModel);
+      modelsToTry.addAll(
+        _modelCascade.where((m) => m != preferredModel),
       );
+    } else {
+      modelsToTry.addAll(_modelCascade);
+    }
 
-      if (response.statusCode != 200) {
+    String? lastError;
+    for (final model in modelsToTry) {
+      try {
+        final response = await http.post(
+          Uri.parse('${_urlForModel(model)}?key=$apiKey'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'system_instruction': {
+              'parts': [
+                {'text': systemPrompt}
+              ]
+            },
+            'contents': contents,
+            'tools': _tools,
+          }),
+        );
+
+        if (response.statusCode == 200) {
+          return _parseResponse(response.body, model);
+        }
+
         final errorBody = jsonDecode(response.body);
         final errorMessage =
             errorBody['error']?['message'] ?? 'Unknown API error';
+
+        if (_isQuotaError(errorMessage)) {
+          lastError = errorMessage;
+          continue; // try next model in cascade
+        }
+
         return GeminiResponse(
           text: 'AI error: $errorMessage',
           functionCall: null,
+          usedModel: model,
         );
+      } catch (e) {
+        lastError = e.toString();
       }
+    }
 
-      final data = jsonDecode(response.body);
-      final candidates = data['candidates'] as List?;
-      if (candidates == null || candidates.isEmpty) {
-        final blockReason = data['promptFeedback']?['blockReason'];
-        if (blockReason != null) {
-          return GeminiResponse(
-            text: "The AI couldn't respond to that. Try rephrasing.",
-            functionCall: null,
-          );
-        }
-        return GeminiResponse(
-          text: 'No response from AI. Try again.',
-          functionCall: null,
-        );
-      }
+    return GeminiResponse(
+      text: 'AI quota exceeded on all models. ${lastError ?? ''}',
+      functionCall: null,
+    );
+  }
 
-      final candidate = candidates[0];
-      final finishReason = candidate['finishReason'] as String?;
-      if (finishReason == 'SAFETY') {
+  GeminiResponse _parseResponse(String body, String model) {
+    final data = jsonDecode(body);
+
+    final candidates = data['candidates'] as List?;
+    if (candidates == null || candidates.isEmpty) {
+      final blockReason = data['promptFeedback']?['blockReason'];
+      if (blockReason != null) {
         return GeminiResponse(
           text: "The AI couldn't respond to that. Try rephrasing.",
           functionCall: null,
+          usedModel: model,
         );
       }
-
-      final parts = candidate['content']?['parts'] as List? ?? [];
-      String? textResult;
-      GeminiFunctionCall? functionCallResult;
-
-      for (final part in parts) {
-        if (part.containsKey('text')) {
-          textResult = (textResult ?? '') + (part['text'] as String);
-        }
-        if (part.containsKey('functionCall')) {
-          final fc = part['functionCall'] as Map<String, dynamic>;
-          final name = fc['name'] as String;
-          final args = (fc['args'] as Map<String, dynamic>?) ?? {};
-          if (_writeFunctionNames.contains(name)) {
-            functionCallResult = GeminiFunctionCall(name: name, args: args);
-          }
-        }
-      }
-
       return GeminiResponse(
-        text: textResult,
-        functionCall: functionCallResult,
-      );
-    } catch (e) {
-      return GeminiResponse(
-        text: 'Network error: ${e.toString()}',
+        text: 'No response from AI. Try again.',
         functionCall: null,
+        usedModel: model,
       );
     }
+
+    final candidate = candidates[0];
+    final finishReason = candidate['finishReason'] as String?;
+    if (finishReason == 'SAFETY') {
+      return GeminiResponse(
+        text: "The AI couldn't respond to that. Try rephrasing.",
+        functionCall: null,
+        usedModel: model,
+      );
+    }
+
+    final parts = candidate['content']?['parts'] as List? ?? [];
+    String? textResult;
+    GeminiFunctionCall? functionCallResult;
+
+    for (final part in parts) {
+      if (part.containsKey('text')) {
+        textResult = (textResult ?? '') + (part['text'] as String);
+      }
+      if (part.containsKey('functionCall')) {
+        final fc = part['functionCall'] as Map<String, dynamic>;
+        final name = fc['name'] as String;
+        final args = (fc['args'] as Map<String, dynamic>?) ?? {};
+        // thoughtSignature is at the part level, sibling to functionCall
+        final thoughtSig = (part['thoughtSignature'] ?? part['thought_signature']) as String?;
+        if (_acceptedFunctionNames.contains(name)) {
+          functionCallResult = GeminiFunctionCall(
+            name: name,
+            args: args,
+            thoughtSignature: thoughtSig,
+          );
+        }
+      }
+    }
+
+    return GeminiResponse(
+      text: textResult,
+      functionCall: functionCallResult,
+      usedModel: model,
+    );
+  }
+
+  Future<String?> searchWeb({
+    required String query,
+    required String apiKey,
+    String? preferredModel,
+  }) async {
+    if (apiKey.isEmpty) return null;
+
+    final modelsToTry = <String>[];
+    if (preferredModel != null && _modelCascade.contains(preferredModel)) {
+      modelsToTry.add(preferredModel);
+      modelsToTry.addAll(
+        _modelCascade.where((m) => m != preferredModel),
+      );
+    } else {
+      modelsToTry.addAll(_modelCascade);
+    }
+
+    for (final model in modelsToTry) {
+      try {
+        final response = await http.post(
+          Uri.parse('${_urlForModel(model)}?key=$apiKey'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'contents': [
+              {
+                'role': 'user',
+                'parts': [
+                  {
+                    'text':
+                        'Search the web for: $query. Provide a concise summary of relevant findings with sources and URLs.'
+                  }
+                ]
+              }
+            ],
+            'tools': [
+              {
+                'googleSearchRetrieval': {
+                  'dynamicRetrievalConfig': {
+                    'mode': 'MODE_DYNAMIC',
+                    'dynamicThreshold': 0.5,
+                  }
+                }
+              }
+            ],
+          }),
+        );
+
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          final parts =
+              data['candidates']?[0]?['content']?['parts'] as List?;
+          if (parts == null || parts.isEmpty) return null;
+          return parts
+              .map((p) => p['text'] as String?)
+              .whereType<String>()
+              .join('\n');
+        }
+
+        final errorBody = jsonDecode(response.body);
+        final errorMessage =
+            errorBody['error']?['message'] ?? 'Unknown API error';
+        if (_isQuotaError(errorMessage)) {
+          continue;
+        }
+        return null;
+      } catch (_) {
+        continue;
+      }
+    }
+    return null;
   }
 
   Future<Map<String, dynamic>?> reviewProblem({
     required String statement,
     required String targetAudience,
     required String source,
+    required String apiKey,
+    String? preferredModel,
   }) async {
-    final apiKey = await getApiKey();
-    if (apiKey == null || apiKey.isEmpty) return null;
+    if (apiKey.isEmpty) return null;
 
     const systemPrompt = '''You are a lean product discovery coach for solo developers, using a simplified Problem-Solution-Validation framework.
 
@@ -315,53 +443,76 @@ Review the statement and respond with JSON only, no markdown:
   "pain_signal_check": "comment on whether the audience and problem combination seems painful enough"
 }''';
 
-    try {
-      final response = await http.post(
-        Uri.parse('$_baseUrl?key=$apiKey'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'system_instruction': {
-            'parts': [
-              {'text': systemPrompt}
-            ]
-          },
-          'contents': [
-            {
-              'role': 'user',
-              'parts': [
-                {
-                  'text':
-                      'Problem statement: "$statement"\nTarget audience: "$targetAudience"\nSource: $source'
-                }
-              ]
-            }
-          ],
-        }),
+    final modelsToTry = <String>[];
+    if (preferredModel != null && _modelCascade.contains(preferredModel)) {
+      modelsToTry.add(preferredModel);
+      modelsToTry.addAll(
+        _modelCascade.where((m) => m != preferredModel),
       );
-
-      if (response.statusCode != 200) return null;
-
-      final data = jsonDecode(response.body);
-      final parts = data['candidates']?[0]?['content']?['parts'] as List?;
-      if (parts == null || parts.isEmpty) return null;
-
-      final text = parts[0]['text'] as String?;
-      if (text == null) return null;
-
-      final cleaned =
-          text.replaceAll('```json', '').replaceAll('```', '').trim();
-      return jsonDecode(cleaned) as Map<String, dynamic>;
-    } catch (_) {
-      return null;
+    } else {
+      modelsToTry.addAll(_modelCascade);
     }
+
+    for (final model in modelsToTry) {
+      try {
+        final response = await http.post(
+          Uri.parse('${_urlForModel(model)}?key=$apiKey'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'system_instruction': {
+              'parts': [
+                {'text': systemPrompt}
+              ]
+            },
+            'contents': [
+              {
+                'role': 'user',
+                'parts': [
+                  {
+                    'text':
+                        'Problem statement: "$statement"\nTarget audience: "$targetAudience"\nSource: $source'
+                  }
+                ]
+              }
+            ],
+          }),
+        );
+
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          final parts =
+              data['candidates']?[0]?['content']?['parts'] as List?;
+          if (parts == null || parts.isEmpty) continue;
+
+          final text = parts[0]['text'] as String?;
+          if (text == null) continue;
+
+          final cleaned =
+              text.replaceAll('```json', '').replaceAll('```', '').trim();
+          return jsonDecode(cleaned) as Map<String, dynamic>;
+        }
+
+        final errorBody = jsonDecode(response.body);
+        final errorMessage =
+            errorBody['error']?['message'] ?? 'Unknown API error';
+        if (_isQuotaError(errorMessage)) {
+          continue;
+        }
+        return null;
+      } catch (_) {
+        continue;
+      }
+    }
+    return null;
   }
 
   Future<Map<String, dynamic>?> reviewSolution({
     required String statement,
     required String problemStatement,
+    required String apiKey,
+    String? preferredModel,
   }) async {
-    final apiKey = await getApiKey();
-    if (apiKey == null || apiKey.isEmpty) return null;
+    if (apiKey.isEmpty) return null;
 
     const systemPrompt = '''You are a lean product discovery coach for solo developers.
 
@@ -382,58 +533,93 @@ Respond with JSON only, no markdown:
   "validation_idea": "one cheap way to test this before building it fully"
 }''';
 
-    try {
-      final response = await http.post(
-        Uri.parse('$_baseUrl?key=$apiKey'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'system_instruction': {
-            'parts': [
-              {'text': systemPrompt}
-            ]
-          },
-          'contents': [
-            {
-              'role': 'user',
-              'parts': [
-                {
-                  'text':
-                      'Linked problem: "$problemStatement"\nSolution statement: "$statement"'
-                }
-              ]
-            }
-          ],
-        }),
+    final modelsToTry = <String>[];
+    if (preferredModel != null && _modelCascade.contains(preferredModel)) {
+      modelsToTry.add(preferredModel);
+      modelsToTry.addAll(
+        _modelCascade.where((m) => m != preferredModel),
       );
-
-      if (response.statusCode != 200) return null;
-
-      final data = jsonDecode(response.body);
-      final parts = data['candidates']?[0]?['content']?['parts'] as List?;
-      if (parts == null || parts.isEmpty) return null;
-
-      final text = parts[0]['text'] as String?;
-      if (text == null) return null;
-
-      final cleaned =
-          text.replaceAll('```json', '').replaceAll('```', '').trim();
-      return jsonDecode(cleaned) as Map<String, dynamic>;
-    } catch (_) {
-      return null;
+    } else {
+      modelsToTry.addAll(_modelCascade);
     }
+
+    for (final model in modelsToTry) {
+      try {
+        final response = await http.post(
+          Uri.parse('${_urlForModel(model)}?key=$apiKey'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'system_instruction': {
+              'parts': [
+                {'text': systemPrompt}
+              ]
+            },
+            'contents': [
+              {
+                'role': 'user',
+                'parts': [
+                  {
+                    'text':
+                        'Linked problem: "$problemStatement"\nSolution statement: "$statement"'
+                  }
+                ]
+              }
+            ],
+          }),
+        );
+
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          final parts =
+              data['candidates']?[0]?['content']?['parts'] as List?;
+          if (parts == null || parts.isEmpty) continue;
+
+          final text = parts[0]['text'] as String?;
+          if (text == null) continue;
+
+          final cleaned =
+              text.replaceAll('```json', '').replaceAll('```', '').trim();
+          return jsonDecode(cleaned) as Map<String, dynamic>;
+        }
+
+        final errorBody = jsonDecode(response.body);
+        final errorMessage =
+            errorBody['error']?['message'] ?? 'Unknown API error';
+        if (_isQuotaError(errorMessage)) {
+          continue;
+        }
+        return null;
+      } catch (_) {
+        continue;
+      }
+    }
+    return null;
   }
 }
 
 class GeminiResponse {
   final String? text;
   final GeminiFunctionCall? functionCall;
+  final String? usedModel;
 
-  GeminiResponse({this.text, this.functionCall});
+  GeminiResponse({this.text, this.functionCall, this.usedModel});
 }
 
 class GeminiFunctionCall {
   final String name;
   final Map<String, dynamic> args;
+  final String? thoughtSignature;
 
-  GeminiFunctionCall({required this.name, required this.args});
+  GeminiFunctionCall({
+    required this.name,
+    required this.args,
+    this.thoughtSignature,
+  });
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'name': name,
+      'args': args,
+    };
+  }
 }

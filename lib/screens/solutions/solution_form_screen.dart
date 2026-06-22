@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/problem_provider.dart';
 import '../../providers/solution_provider.dart';
+import '../../providers/user_settings_provider.dart';
 import '../../services/gemini_service.dart';
 import '../../theme.dart';
 import '../../widgets/ai_review_card.dart';
@@ -55,10 +56,13 @@ class _SolutionFormScreenState extends ConsumerState<SolutionFormScreen> {
     final repo = ref.read(problemRepositoryProvider);
     final problem = await repo.fetchById(_selectedProblemId!);
 
+    final settings = await ref.read(userSettingsProvider.future);
     final gemini = GeminiService();
     final result = await gemini.reviewSolution(
       statement: _statementController.text.trim(),
       problemStatement: problem.statement,
+      apiKey: settings?.geminiApiKey ?? '',
+      preferredModel: settings?.preferredModel,
     );
 
     setState(() {

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/problem.dart';
 import '../models/problem_evidence.dart';
@@ -11,6 +12,7 @@ import 'problem_provider.dart';
 import 'problem_evidence_provider.dart';
 import 'solution_provider.dart';
 import 'validation_provider.dart';
+import 'user_settings_provider.dart';
 
 final geminiServiceProvider = Provider<GeminiService>((ref) {
   return GeminiService();
@@ -36,13 +38,22 @@ class ChatMessage {
 class ToolConfirmation {
   final String toolName;
   final Map<String, dynamic> args;
+  final String? thoughtSignature;
   final bool isPending;
 
   ToolConfirmation({
     required this.toolName,
     required this.args,
+    this.thoughtSignature,
     this.isPending = true,
   });
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'name': toolName,
+      'args': args,
+    };
+  }
 }
 
 class ChatState {
@@ -98,16 +109,79 @@ class ChatNotifier extends StateNotifier<ChatState> {
       ]
     });
 
+    final settings = await _ref.read(userSettingsProvider.future);
+    final apiKey = settings?.geminiApiKey ?? '';
+    final preferredModel = settings?.preferredModel;
     final systemPrompt = await _buildSystemPrompt();
     final gemini = _ref.read(geminiServiceProvider);
 
     final response = await gemini.sendMessage(
       systemPrompt: systemPrompt,
       contents: _contents,
+      apiKey: apiKey,
+      preferredModel: preferredModel,
     );
 
     if (response.functionCall != null) {
       final fc = response.functionCall!;
+
+      // web_search is read-only: execute immediately, no confirmation needed
+      if (fc.name == 'web_search') {
+        final query = fc.args['query'] as String? ?? '';
+        debugPrint('[web_search] query: $query');
+        final searchResult = await gemini.searchWeb(
+          query: query,
+          apiKey: apiKey,
+          preferredModel: preferredModel,
+        );
+        final resultPreview = searchResult == null ? 'null' : searchResult.substring(0, searchResult.length.clamp(0, 200));
+        debugPrint('[web_search] result: $resultPreview...');
+
+        _contents.add({
+          'role': 'model',
+          'parts': [
+            {
+              'functionCall': fc.toJson(),
+              if (fc.thoughtSignature != null) 'thought_signature': fc.thoughtSignature,
+            }
+          ]
+        });
+        _contents.add({
+          'role': 'function',
+          'parts': [
+            {
+              'functionResponse': {
+                'name': fc.name,
+                'response': {'result': searchResult ?? 'No results found.'}
+              }
+            }
+          ]
+        });
+
+        final followUp = await gemini.sendMessage(
+          systemPrompt: systemPrompt,
+          contents: _contents,
+          apiKey: apiKey,
+          preferredModel: preferredModel,
+        );
+        debugPrint('[web_search] followUp text: ${followUp.text}');
+        debugPrint('[web_search] followUp usedModel: ${followUp.usedModel}');
+
+        final followUpText = followUp.text ?? 'Search completed.';
+        _contents.add({
+          'role': 'model',
+          'parts': [{'text': followUpText}]
+        });
+
+        final newMessages = [
+          ...state.messages,
+          ChatMessage(role: 'assistant', text: followUpText),
+        ];
+        state = state.copyWith(messages: newMessages, isLoading: false);
+        return;
+      }
+
+      // Write operations require confirmation
       final confirmMsg = _buildConfirmationMessage(fc.name, fc.args);
       final newMessages = [
         ...state.messages,
@@ -117,14 +191,22 @@ class ChatNotifier extends StateNotifier<ChatState> {
           role: 'assistant',
           text: confirmMsg,
           toolConfirmation:
-              ToolConfirmation(toolName: fc.name, args: fc.args),
+              ToolConfirmation(
+                toolName: fc.name,
+                args: fc.args,
+                thoughtSignature: fc.thoughtSignature,
+              ),
         ),
       ];
       state = state.copyWith(
         messages: newMessages,
         isLoading: false,
         pendingConfirmation:
-            ToolConfirmation(toolName: fc.name, args: fc.args),
+            ToolConfirmation(
+              toolName: fc.name,
+              args: fc.args,
+              thoughtSignature: fc.thoughtSignature,
+            ),
       );
     } else {
       final responseText = response.text ?? 'No response from AI.';
@@ -156,7 +238,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
       'role': 'model',
       'parts': [
         {
-          'functionCall': {'name': pending.toolName, 'args': pending.args}
+          'functionCall': pending.toJson(),
+          if (pending.thoughtSignature != null) 'thought_signature': pending.thoughtSignature,
         }
       ]
     });
@@ -175,11 +258,16 @@ class ChatNotifier extends StateNotifier<ChatState> {
     // Invalidate relevant providers
     _invalidateDataProviders();
 
+    final settings2 = await _ref.read(userSettingsProvider.future);
+    final apiKey2 = settings2?.geminiApiKey ?? '';
+    final preferredModel2 = settings2?.preferredModel;
     final systemPrompt = await _buildSystemPrompt();
     final gemini = _ref.read(geminiServiceProvider);
     final response = await gemini.sendMessage(
       systemPrompt: systemPrompt,
       contents: _contents,
+      apiKey: apiKey2,
+      preferredModel: preferredModel2,
     );
 
     final responseText = response.text ?? 'Done.';
@@ -207,7 +295,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
       'role': 'model',
       'parts': [
         {
-          'functionCall': {'name': pending.toolName, 'args': pending.args}
+          'functionCall': pending.toJson(),
+          if (pending.thoughtSignature != null) 'thought_signature': pending.thoughtSignature,
         }
       ]
     });
@@ -339,7 +428,7 @@ Rules:
 - Never encourage moving a solution to "Building" status without at least one passed validation.
 - Use plain, jargon-free language. Stick to Problem, Solution, Validation.
 
-You have web search access. When the user asks you to find evidence for a problem, use web search to find real quotes. When you find a relevant quote:
+You have a web_search tool. When the user asks you to find evidence for a problem, call web_search with a specific query to find real quotes from review sites, forums, or social media. After you get the results:
 - Always cite the actual platform and include the URL if available
 - Never fabricate a quote or URL — if search doesn't find something concrete, say so honestly
 - Present what you found to the user first, then offer to save it via the create_problem_evidence tool

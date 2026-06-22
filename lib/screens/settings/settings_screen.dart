@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../providers/auth_provider.dart';
-import '../../services/gemini_service.dart';
+import '../../providers/user_settings_provider.dart';
 import '../../theme.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -17,37 +17,42 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _apiKeyController = TextEditingController();
   bool _isApiKeyVisible = false;
-  bool _hasApiKey = false;
-  final _gemini = GeminiService();
+  String? _selectedModel;
+
+  static const _modelOptions = [
+    'gemini-3.5-flash',
+    'gemini-3.1-pro',
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+  ];
 
   @override
   void initState() {
     super.initState();
-    _loadApiKey();
+    _loadSettings();
   }
 
-  Future<void> _loadApiKey() async {
-    final key = await _gemini.getApiKey();
-    if (key != null && key.isNotEmpty) {
+  Future<void> _loadSettings() async {
+    final settings = await ref.read(userSettingsProvider.future);
+    if (settings != null) {
       setState(() {
-        _hasApiKey = true;
-        _apiKeyController.text = key;
+        _apiKeyController.text = settings.geminiApiKey ?? '';
+        _selectedModel = settings.preferredModel;
       });
     }
   }
 
-  Future<void> _saveApiKey() async {
+  Future<void> _saveSettings() async {
     final key = _apiKeyController.text.trim();
-    if (key.isEmpty) {
-      await _gemini.removeApiKey();
-      setState(() => _hasApiKey = false);
-    } else {
-      await _gemini.setApiKey(key);
-      setState(() => _hasApiKey = true);
-    }
+    final notifier = ref.read(userSettingsProvider.notifier);
+    await notifier.saveSettings(
+      apiKey: key.isEmpty ? null : key,
+      preferredModel: _selectedModel,
+    );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('API key saved')),
+        const SnackBar(content: Text('Settings saved')),
       );
     }
   }
@@ -144,7 +149,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ),
                   IconButton(
                     icon: const Icon(Icons.save, size: 20),
-                    onPressed: _saveApiKey,
+                    onPressed: _saveSettings,
                   ),
                 ],
               ),
@@ -163,25 +168,37 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ),
           ),
-          if (!_hasApiKey) ...[
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: AppColors.warning.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                    color: AppColors.warning.withValues(alpha: 0.3)),
-              ),
-              child: Text(
-                'AI features (chat, problem/solution review) are disabled until you add an API key.',
-                style: GoogleFonts.inter(
-                  fontSize: 12,
-                  color: AppColors.warning,
-                ),
-              ),
+          const SizedBox(height: 24),
+          Text(
+            'Preferred Model',
+            style: GoogleFonts.spaceGrotesk(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textPrimary,
             ),
-          ],
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            initialValue: _selectedModel,
+            decoration: const InputDecoration(
+              hintText: 'Select a model',
+            ),
+            items: _modelOptions.map((model) {
+              return DropdownMenuItem(
+                value: model,
+                child: Text(model),
+              );
+            }).toList(),
+            onChanged: (value) => setState(() => _selectedModel = value),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Primary model is used first. If quota is exceeded, the app automatically falls back through the cascade.',
+            style: GoogleFonts.inter(
+              fontSize: 12,
+              color: AppColors.textSecondary,
+            ),
+          ),
           const SizedBox(height: 32),
           const Divider(color: AppColors.border),
           const SizedBox(height: 16),
