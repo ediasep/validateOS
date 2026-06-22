@@ -371,20 +371,13 @@ class GeminiService {
                 'parts': [
                   {
                     'text':
-                        'Search the web for: $query. Provide a concise summary of relevant findings with sources and URLs.'
+                        'Search the web for: $query. Provide a detailed summary of the most relevant findings including specific quotes, complaints, or evidence you find. Include source URLs where possible.'
                   }
                 ]
               }
             ],
             'tools': [
-              {
-                'googleSearchRetrieval': {
-                  'dynamicRetrievalConfig': {
-                    'mode': 'MODE_DYNAMIC',
-                    'dynamicThreshold': 0.5,
-                  }
-                }
-              }
+              {'google_search': {}}
             ],
           }),
         );
@@ -408,7 +401,8 @@ class GeminiService {
         if (_isQuotaError(errorMessage)) {
           continue;
         }
-        return null;
+        // Non-quota error: try next model instead of returning null immediately
+        continue;
       } catch (_) {
         continue;
       }

@@ -134,6 +134,23 @@ class ChatNotifier extends StateNotifier<ChatState> {
         final resultPreview = searchResult == null ? 'null' : searchResult.substring(0, searchResult.length.clamp(0, 200));
         debugPrint('[web_search] result: $resultPreview...');
 
+        // If search returned results, use them directly as the AI response
+        // since searchWeb already uses Gemini with google_search grounding
+        if (searchResult != null && searchResult.isNotEmpty) {
+          _contents.add({
+            'role': 'model',
+            'parts': [{'text': searchResult}]
+          });
+
+          final newMessages = [
+            ...state.messages,
+            ChatMessage(role: 'assistant', text: searchResult),
+          ];
+          state = state.copyWith(messages: newMessages, isLoading: false);
+          return;
+        }
+
+        // Search returned no results — ask the model to respond without search
         _contents.add({
           'role': 'model',
           'parts': [
@@ -149,7 +166,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
             {
               'functionResponse': {
                 'name': fc.name,
-                'response': {'result': searchResult ?? 'No results found.'}
+                'response': {'result': 'Web search did not return any results for this query.'}
               }
             }
           ]
@@ -163,7 +180,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
         debugPrint('[web_search] followUp text: ${followUp.text}');
         debugPrint('[web_search] followUp usedModel: ${followUp.usedModel}');
 
-        final followUpText = followUp.text ?? 'Search completed.';
+        final followUpText = followUp.text ??
+            'I was unable to find relevant search results for "$query". Try rephrasing your search or asking about a more specific topic.';
         _contents.add({
           'role': 'model',
           'parts': [{'text': followUpText}]
