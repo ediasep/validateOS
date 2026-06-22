@@ -111,7 +111,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
     final settings = await _ref.read(userSettingsProvider.future);
     final apiKey = settings?.geminiApiKey ?? '';
-    final preferredModel = settings?.preferredModel;
     final systemPrompt = await _buildSystemPrompt();
     final gemini = _ref.read(geminiServiceProvider);
 
@@ -119,7 +118,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
       systemPrompt: systemPrompt,
       contents: _contents,
       apiKey: apiKey,
-      preferredModel: preferredModel,
     );
 
     if (response.functionCall != null) {
@@ -132,7 +130,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
         final searchResult = await gemini.searchWeb(
           query: query,
           apiKey: apiKey,
-          preferredModel: preferredModel,
         );
         final resultPreview = searchResult == null ? 'null' : searchResult.substring(0, searchResult.length.clamp(0, 200));
         debugPrint('[web_search] result: $resultPreview...');
@@ -162,7 +159,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
           systemPrompt: systemPrompt,
           contents: _contents,
           apiKey: apiKey,
-          preferredModel: preferredModel,
         );
         debugPrint('[web_search] followUp text: ${followUp.text}');
         debugPrint('[web_search] followUp usedModel: ${followUp.usedModel}');
@@ -260,14 +256,12 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
     final settings2 = await _ref.read(userSettingsProvider.future);
     final apiKey2 = settings2?.geminiApiKey ?? '';
-    final preferredModel2 = settings2?.preferredModel;
     final systemPrompt = await _buildSystemPrompt();
     final gemini = _ref.read(geminiServiceProvider);
     final response = await gemini.sendMessage(
       systemPrompt: systemPrompt,
       contents: _contents,
       apiKey: apiKey2,
-      preferredModel: preferredModel2,
     );
 
     final responseText = response.text ?? 'Done.';

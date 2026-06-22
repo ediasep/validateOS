@@ -63,7 +63,6 @@ class _ProblemFormScreenState extends ConsumerState<ProblemFormScreen> {
       targetAudience: _audienceController.text.trim(),
       source: _source,
       apiKey: settings?.geminiApiKey ?? '',
-      preferredModel: settings?.preferredModel,
     );
 
     setState(() {

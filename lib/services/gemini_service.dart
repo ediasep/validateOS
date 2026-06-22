@@ -6,11 +6,9 @@ class GeminiService {
       'https://generativelanguage.googleapis.com/v1beta/models';
 
   static final List<String> _modelCascade = [
-    'gemini-3.5-flash',
-    'gemini-3.1-pro',
-    'gemini-3.1-flash-lite',
-    'gemini-2.5-pro',
     'gemini-2.5-flash',
+    'gemini-2.5-pro',
+    'gemini-2.0-flash',
   ];
 
   String _urlForModel(String model) =>
@@ -217,7 +215,6 @@ class GeminiService {
     required String systemPrompt,
     required List<Map<String, dynamic>> contents,
     required String apiKey,
-    String? preferredModel,
   }) async {
     if (apiKey.isEmpty) {
       return GeminiResponse(
@@ -226,18 +223,8 @@ class GeminiService {
       );
     }
 
-    final modelsToTry = <String>[];
-    if (preferredModel != null && _modelCascade.contains(preferredModel)) {
-      modelsToTry.add(preferredModel);
-      modelsToTry.addAll(
-        _modelCascade.where((m) => m != preferredModel),
-      );
-    } else {
-      modelsToTry.addAll(_modelCascade);
-    }
-
     String? lastError;
-    for (final model in modelsToTry) {
+    for (final model in _modelCascade) {
       try {
         final response = await http.post(
           Uri.parse('${_urlForModel(model)}?key=$apiKey'),
@@ -263,7 +250,7 @@ class GeminiService {
 
         if (_isQuotaError(errorMessage)) {
           lastError = errorMessage;
-          continue; // try next model in cascade
+          continue;
         }
 
         return GeminiResponse(
@@ -311,20 +298,33 @@ class GeminiService {
         usedModel: model,
       );
     }
+    if (finishReason == 'RECITATION') {
+      return GeminiResponse(
+        text:
+            "I found relevant information but can't quote it directly due to content policies. Try asking me to summarize what I found instead.",
+        functionCall: null,
+        usedModel: model,
+      );
+    }
 
     final parts = candidate['content']?['parts'] as List? ?? [];
     String? textResult;
     GeminiFunctionCall? functionCallResult;
 
     for (final part in parts) {
+      // Skip thought/reasoning parts from Gemini 2.5 models
+      if (part['thought'] == true) continue;
+
       if (part.containsKey('text')) {
-        textResult = (textResult ?? '') + (part['text'] as String);
+        final t = part['text'] as String;
+        if (t.isNotEmpty) {
+          textResult = (textResult ?? '') + t;
+        }
       }
       if (part.containsKey('functionCall')) {
         final fc = part['functionCall'] as Map<String, dynamic>;
         final name = fc['name'] as String;
         final args = (fc['args'] as Map<String, dynamic>?) ?? {};
-        // thoughtSignature is at the part level, sibling to functionCall
         final thoughtSig = (part['thoughtSignature'] ?? part['thought_signature']) as String?;
         if (_acceptedFunctionNames.contains(name)) {
           functionCallResult = GeminiFunctionCall(
@@ -333,6 +333,16 @@ class GeminiService {
             thoughtSignature: thoughtSig,
           );
         }
+      }
+    }
+
+    // If no visible text was found, check grounding metadata for search info
+    if (textResult == null && candidate['groundingMetadata'] != null) {
+      final gm = candidate['groundingMetadata'] as Map<String, dynamic>;
+      final queries = gm['webSearchQueries'] as List?;
+      if (queries != null && queries.isNotEmpty) {
+        textResult =
+            'I searched for information but could not generate a response. Please try rephrasing your question.';
       }
     }
 
@@ -346,21 +356,10 @@ class GeminiService {
   Future<String?> searchWeb({
     required String query,
     required String apiKey,
-    String? preferredModel,
   }) async {
     if (apiKey.isEmpty) return null;
 
-    final modelsToTry = <String>[];
-    if (preferredModel != null && _modelCascade.contains(preferredModel)) {
-      modelsToTry.add(preferredModel);
-      modelsToTry.addAll(
-        _modelCascade.where((m) => m != preferredModel),
-      );
-    } else {
-      modelsToTry.addAll(_modelCascade);
-    }
-
-    for (final model in modelsToTry) {
+    for (final model in _modelCascade) {
       try {
         final response = await http.post(
           Uri.parse('${_urlForModel(model)}?key=$apiKey'),
@@ -396,8 +395,10 @@ class GeminiService {
               data['candidates']?[0]?['content']?['parts'] as List?;
           if (parts == null || parts.isEmpty) return null;
           return parts
+              .where((p) => p['thought'] != true)
               .map((p) => p['text'] as String?)
               .whereType<String>()
+              .where((t) => t.isNotEmpty)
               .join('\n');
         }
 
@@ -420,7 +421,6 @@ class GeminiService {
     required String targetAudience,
     required String source,
     required String apiKey,
-    String? preferredModel,
   }) async {
     if (apiKey.isEmpty) return null;
 
@@ -443,17 +443,7 @@ Review the statement and respond with JSON only, no markdown:
   "pain_signal_check": "comment on whether the audience and problem combination seems painful enough"
 }''';
 
-    final modelsToTry = <String>[];
-    if (preferredModel != null && _modelCascade.contains(preferredModel)) {
-      modelsToTry.add(preferredModel);
-      modelsToTry.addAll(
-        _modelCascade.where((m) => m != preferredModel),
-      );
-    } else {
-      modelsToTry.addAll(_modelCascade);
-    }
-
-    for (final model in modelsToTry) {
+    for (final model in _modelCascade) {
       try {
         final response = await http.post(
           Uri.parse('${_urlForModel(model)}?key=$apiKey'),
@@ -484,8 +474,12 @@ Review the statement and respond with JSON only, no markdown:
               data['candidates']?[0]?['content']?['parts'] as List?;
           if (parts == null || parts.isEmpty) continue;
 
-          final text = parts[0]['text'] as String?;
-          if (text == null) continue;
+          final text = parts
+              .where((p) => p['thought'] != true)
+              .map((p) => p['text'] as String?)
+              .whereType<String>()
+              .join();
+          if (text.isEmpty) continue;
 
           final cleaned =
               text.replaceAll('```json', '').replaceAll('```', '').trim();
@@ -510,7 +504,6 @@ Review the statement and respond with JSON only, no markdown:
     required String statement,
     required String problemStatement,
     required String apiKey,
-    String? preferredModel,
   }) async {
     if (apiKey.isEmpty) return null;
 
@@ -533,17 +526,7 @@ Respond with JSON only, no markdown:
   "validation_idea": "one cheap way to test this before building it fully"
 }''';
 
-    final modelsToTry = <String>[];
-    if (preferredModel != null && _modelCascade.contains(preferredModel)) {
-      modelsToTry.add(preferredModel);
-      modelsToTry.addAll(
-        _modelCascade.where((m) => m != preferredModel),
-      );
-    } else {
-      modelsToTry.addAll(_modelCascade);
-    }
-
-    for (final model in modelsToTry) {
+    for (final model in _modelCascade) {
       try {
         final response = await http.post(
           Uri.parse('${_urlForModel(model)}?key=$apiKey'),
@@ -574,8 +557,12 @@ Respond with JSON only, no markdown:
               data['candidates']?[0]?['content']?['parts'] as List?;
           if (parts == null || parts.isEmpty) continue;
 
-          final text = parts[0]['text'] as String?;
-          if (text == null) continue;
+          final text = parts
+              .where((p) => p['thought'] != true)
+              .map((p) => p['text'] as String?)
+              .whereType<String>()
+              .join();
+          if (text.isEmpty) continue;
 
           final cleaned =
               text.replaceAll('```json', '').replaceAll('```', '').trim();
