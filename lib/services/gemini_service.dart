@@ -201,6 +201,15 @@ class GeminiService {
     {'functionDeclarations': _functionDeclarations},
   ];
 
+  // Restrict model to ONLY our declared functions (prevents built-in
+  // google_search from being used alongside function declarations).
+  static final Map<String, dynamic> _toolConfig = {
+    'function_calling_config': {
+      'mode': 'AUTO',
+      'allowed_function_names': _acceptedFunctionNames.toList(),
+    }
+  };
+
   static const _acceptedFunctionNames = {
     'create_problem',
     'create_solution',
@@ -237,6 +246,7 @@ class GeminiService {
             },
             'contents': contents,
             'tools': _tools,
+            'tool_config': _toolConfig,
           }),
         );
 
@@ -249,6 +259,13 @@ class GeminiService {
             errorBody['error']?['message'] ?? 'Unknown API error';
 
         if (_isQuotaError(errorMessage)) {
+          lastError = errorMessage;
+          continue;
+        }
+
+        // If built-in tools conflict, retry without function declarations
+        if (errorMessage.contains('Built-in tools') ||
+            errorMessage.contains('google_search')) {
           lastError = errorMessage;
           continue;
         }
