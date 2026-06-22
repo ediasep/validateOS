@@ -17,15 +17,6 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _apiKeyController = TextEditingController();
   bool _isApiKeyVisible = false;
-  String? _selectedModel;
-
-  static const _modelOptions = [
-    'gemini-3.5-flash',
-    'gemini-3.1-pro',
-    'gemini-3.1-flash-lite',
-    'gemini-2.5-pro',
-    'gemini-2.5-flash',
-  ];
 
   @override
   void initState() {
@@ -38,7 +29,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     if (settings != null) {
       setState(() {
         _apiKeyController.text = settings.geminiApiKey ?? '';
-        _selectedModel = settings.preferredModel;
       });
     }
   }
@@ -48,7 +38,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final notifier = ref.read(userSettingsProvider.notifier);
     await notifier.saveSettings(
       apiKey: key.isEmpty ? null : key,
-      preferredModel: _selectedModel,
     );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -166,37 +155,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 color: AppColors.accent,
                 decoration: TextDecoration.underline,
               ),
-            ),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            'Preferred Model',
-            style: GoogleFonts.spaceGrotesk(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: AppColors.textPrimary,
-            ),
-          ),
-          const SizedBox(height: 8),
-          DropdownButtonFormField<String>(
-            initialValue: _selectedModel,
-            decoration: const InputDecoration(
-              hintText: 'Select a model',
-            ),
-            items: _modelOptions.map((model) {
-              return DropdownMenuItem(
-                value: model,
-                child: Text(model),
-              );
-            }).toList(),
-            onChanged: (value) => setState(() => _selectedModel = value),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Primary model is used first. If quota is exceeded, the app automatically falls back through the cascade.',
-            style: GoogleFonts.inter(
-              fontSize: 12,
-              color: AppColors.textSecondary,
             ),
           ),
           const SizedBox(height: 32),

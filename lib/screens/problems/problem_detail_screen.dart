@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../providers/auth_provider.dart';
+import '../../providers/chat_provider.dart';
 import '../../providers/problem_provider.dart';
 import '../../providers/problem_evidence_provider.dart';
 import '../../providers/solution_provider.dart';
@@ -323,7 +324,14 @@ class _ProblemDetailScreenState extends ConsumerState<ProblemDetailScreen> {
                                 ),
                                 const SizedBox(width: 8),
                                 TextButton(
-                                  onPressed: () => context.go('/chat'),
+                                  onPressed: () {
+                                    ref
+                                        .read(chatProvider.notifier)
+                                        .setInitialPrompt(
+                                          'Search for evidence that this problem is real: "${problem.statement}" (target audience: ${problem.targetAudience}). Look for real complaints, reviews, or forum posts from people experiencing this problem.',
+                                        );
+                                    context.go('/chat');
+                                  },
                                   child: const Text('Ask AI to Search'),
                                 ),
                               ],

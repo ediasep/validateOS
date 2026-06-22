@@ -62,7 +62,6 @@ class _SolutionFormScreenState extends ConsumerState<SolutionFormScreen> {
       statement: _statementController.text.trim(),
       problemStatement: problem.statement,
       apiKey: settings?.geminiApiKey ?? '',
-      preferredModel: settings?.preferredModel,
     );
 
     setState(() {

@@ -111,7 +111,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
     final settings = await _ref.read(userSettingsProvider.future);
     final apiKey = settings?.geminiApiKey ?? '';
-    final preferredModel = settings?.preferredModel;
     final systemPrompt = await _buildSystemPrompt();
     final gemini = _ref.read(geminiServiceProvider);
 
@@ -119,7 +118,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
       systemPrompt: systemPrompt,
       contents: _contents,
       apiKey: apiKey,
-      preferredModel: preferredModel,
     );
 
     if (response.functionCall != null) {
@@ -132,11 +130,27 @@ class ChatNotifier extends StateNotifier<ChatState> {
         final searchResult = await gemini.searchWeb(
           query: query,
           apiKey: apiKey,
-          preferredModel: preferredModel,
         );
         final resultPreview = searchResult == null ? 'null' : searchResult.substring(0, searchResult.length.clamp(0, 200));
         debugPrint('[web_search] result: $resultPreview...');
 
+        // If search returned results, use them directly as the AI response
+        // since searchWeb already uses Gemini with google_search grounding
+        if (searchResult != null && searchResult.isNotEmpty) {
+          _contents.add({
+            'role': 'model',
+            'parts': [{'text': searchResult}]
+          });
+
+          final newMessages = [
+            ...state.messages,
+            ChatMessage(role: 'assistant', text: searchResult),
+          ];
+          state = state.copyWith(messages: newMessages, isLoading: false);
+          return;
+        }
+
+        // Search returned no results — ask the model to respond without search
         _contents.add({
           'role': 'model',
           'parts': [
@@ -152,7 +166,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
             {
               'functionResponse': {
                 'name': fc.name,
-                'response': {'result': searchResult ?? 'No results found.'}
+                'response': {'result': 'Web search did not return any results for this query.'}
               }
             }
           ]
@@ -162,12 +176,12 @@ class ChatNotifier extends StateNotifier<ChatState> {
           systemPrompt: systemPrompt,
           contents: _contents,
           apiKey: apiKey,
-          preferredModel: preferredModel,
         );
         debugPrint('[web_search] followUp text: ${followUp.text}');
         debugPrint('[web_search] followUp usedModel: ${followUp.usedModel}');
 
-        final followUpText = followUp.text ?? 'Search completed.';
+        final followUpText = followUp.text ??
+            'I was unable to find relevant search results for "$query". Try rephrasing your search or asking about a more specific topic.';
         _contents.add({
           'role': 'model',
           'parts': [{'text': followUpText}]
@@ -260,14 +274,12 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
     final settings2 = await _ref.read(userSettingsProvider.future);
     final apiKey2 = settings2?.geminiApiKey ?? '';
-    final preferredModel2 = settings2?.preferredModel;
     final systemPrompt = await _buildSystemPrompt();
     final gemini = _ref.read(geminiServiceProvider);
     final response = await gemini.sendMessage(
       systemPrompt: systemPrompt,
       contents: _contents,
       apiKey: apiKey2,
-      preferredModel: preferredModel2,
     );
 
     final responseText = response.text ?? 'Done.';
